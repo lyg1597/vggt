@@ -21,79 +21,41 @@ def visualize_scene(npz_file_path: str, axis_scale: float = 0.1):
     data = np.load(npz_file_path)
 
     point_cloud_vertices = data.get('point_cloud')
+    point_cloud_color = data.get('point_cloud_color')
     extrinsics = data.get('extrinsics')
-
-    # Check for required data
-    if point_cloud_vertices is None or extrinsics is None:
-        print("Error: The .npz file must contain 'point_cloud' and 'extrinsics' arrays.")
-        return
-
-    # Check for optional color data
-    point_cloud_colors = data.get('point_cloud_colors')
-    if point_cloud_colors is not None:
-        print(f"Found {len(point_cloud_colors)} color entries.")
-    else:
-        print("No color data found for point cloud.")
-
-    print(f"Found {len(point_cloud_vertices)} points and {len(extrinsics)} camera poses.")
-
-    # --- 2. Create PyVista Plotter ---
-    plotter = pv.Plotter(window_size=[1200, 800])
-
-    # --- 3. Add Point Cloud to Scene ---
-    if point_cloud_vertices.size > 0:
-        cloud = pv.PolyData(point_cloud_vertices)
-        
-        actor_params = {
-            "render_points_as_spheres": True,
-            "point_size": 3,
-        }
-
-        if point_cloud_colors is not None and len(point_cloud_colors) == len(point_cloud_vertices):
-            cloud["colors"] = point_cloud_colors
-            actor_params["scalars"] = "colors"
-            actor_params["rgb"] = True
-        else:
-            actor_params["color"] = "tan"
-
-        plotter.add_mesh(cloud, **actor_params)
-        
-        # Calculate a reasonable scale for the axes based on the point cloud size
-        scene_size = np.linalg.norm(cloud.bounds[1::2] - cloud.bounds[0::2])
-        dynamic_axis_scale = scene_size * axis_scale
-    else:
-        print("Warning: Point cloud is empty.")
-        dynamic_axis_scale = 1.0 # Default scale if there's no point cloud
-
-
-    # --- 4. Add Camera Poses to Scene ---
-    for i, E in enumerate(extrinsics):
-        # The extrinsic matrix E maps world -> camera. We need the inverse (pose)
-        # to place the camera in the world.
-        
-        # Create a 4x4 homogeneous world-to-camera matrix
-        world_to_cam = np.eye(4)
-        world_to_cam[:3, :] = E
-
-        # Invert to get the camera pose (camera-to-world)
-        cam_pose = np.linalg.inv(world_to_cam)
-
-        # Create a small XYZ axis marker
-        axes = pv.create_axes_marker(line_width=3, label_size=(0.0, 0.0))
-
-        # Scale and position the axes using the camera pose
-        axes.transform(cam_pose)
-        axes.scale([dynamic_axis_scale] * 3, inplace=True)
-        
-        plotter.add_mesh(axes)
-
-    # --- 5. Customize and Show Plot ---
-    plotter.add_axes()
-    plotter.enable_eye_dome_lighting()
-    plotter.set_background('black')
+    world_to_camera = np.zeros((extrinsics.shape[0],4,4))
+    world_to_camera[:,:3,:] = extrinsics 
+    world_to_camera[:,3,3] = 1
+    camera_to_world = np.linalg.inv(world_to_camera)
     
-    print("\nDisplaying scene. Close the window to exit.")
-    plotter.show()
+    p = pv.Plotter()
+    p.background_color = "white"
+
+    # Global XYZ reference axes (world frame)
+    p.add_mesh(pv.Line((0, 0, 0), (2, 0, 0)), color="red",   line_width=4)
+    p.add_mesh(pv.Line((0, 0, 0), (0, 2, 0)), color="green", line_width=4)
+    p.add_mesh(pv.Line((0, 0, 0), (0, 0, 2)), color="blue",  line_width=4)
+
+    for i in range(camera_to_world.shape[0]):           # rgb_path unused here
+
+        # Full camera rotation with –5° pitch offset applied
+        pos = camera_to_world[i,:3,3]
+        R_final = camera_to_world[i,:3,:3]
+
+        # Local axes endpoints
+        x_end = pos + R_final @ np.array([0.2, 0, 0])
+        y_end = pos + R_final @ np.array([0, 0.2, 0])
+        z_end = pos + R_final @ np.array([0, 0, 0.2])
+
+        # Draw camera-frame axes (short lines)
+        p.add_mesh(pv.Line(pos, x_end), color="red",   line_width=2)
+        p.add_mesh(pv.Line(pos, y_end), color="green", line_width=2)
+        p.add_mesh(pv.Line(pos, z_end), color="blue",  line_width=2)
+
+        # Red point marking the camera position
+        p.add_mesh(pv.Sphere(radius=0.01, center=pos), color="red")
+
+    p.show(cpos="xy")                     # top-down view
 
 
 if __name__ == "__main__":

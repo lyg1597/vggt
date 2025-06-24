@@ -1,6 +1,9 @@
 import numpy as np
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
+import json 
+import pyvista as pv 
+import trimesh
 
 def solve_T_s(a: np.ndarray, b: np.ndarray,
               init_s: float | None = None) -> tuple[np.ndarray, float]:
@@ -94,17 +97,144 @@ def b_to_a(b, T, s):
     a_pred[:, :3, 3] /= s                 # undo the scale on translation
     return a_pred
 
+def transform_point_cloud(points, T, s):
+    """
+    Transforms a point cloud from frame A (vggt) to frame B (json).
+
+    Args:
+        points (np.ndarray): A NumPy array of shape (N, 3) for point coordinates.
+        T (np.ndarray): The 4x4 transformation matrix from solve_T_s.
+        s (float): The scale factor from solve_T_s.
+
+    Returns:
+        np.ndarray: The transformed point cloud of shape (N, 3).
+    """
+    # First, scale the points
+    points_scaled = points * s
+
+    # To apply the 4x4 transform, we need to convert points to homogeneous coordinates (N, 4)
+    # by adding a '1' at the end of each point vector.
+    points_homogeneous = np.hstack([points_scaled, np.ones((points.shape[0], 1))])
+
+    # Apply the transformation matrix T
+    # T is (4, 4), points_homogeneous.T is (4, N). The result is (4, N).
+    transformed_points_homogeneous = (T @ points_homogeneous.T).T
+
+    # Convert back from homogeneous coordinates by dropping the last column
+    return transformed_points_homogeneous[:, :3]
+
+# --- Simplified visualization function ---
+def visualize_point_cloud(plotter, points, colors):
+    """
+    Creates an interactive 3D plot of the transformed point cloud.
+
+    Args:
+        points (np.ndarray): The point cloud in the JSON frame.
+        colors (np.ndarray): The RGB colors for the points.
+    """
+    print("Opening visualization window...")
+    cloud = pv.PolyData(points)
+    cloud["colors"] = colors
+
+    # plotter = pv.Plotter(window_size=[1200, 800])
+    plotter.add_mesh(
+        cloud,
+        render_points_as_spheres=True,
+        point_size=5,
+        scalars="colors",
+        rgb=True
+    )
+    plotter.add_title("Transformed Point Cloud (JSON Frame)", font_size=12)
+    plotter.enable_eye_dome_lighting()
+    plotter.add_axes()
+    print("Close the PyVista window to exit the script.")
+    # plotter.show()
+    return plotter
+
+def save_point_cloud_to_ply(filename, points, colors):
+    """
+    Saves a colored point cloud to a PLY file.
+
+    Args:
+        filename (str): The path to save the PLY file.
+        points (np.ndarray): The point cloud vertices (N, 3).
+        colors (np.ndarray): The point cloud colors (N, 3).
+    """
+    print(f"Saving point cloud to {filename}...")
+    # Create a trimesh PointCloud object
+    cloud = trimesh.PointCloud(vertices=points, colors=colors)
+    # Export to PLY format
+    cloud.export(file_obj=filename, file_type='ply')
+    print("Successfully saved.")
+
 # ---------------------------------------------------------------------------
 # Example usage
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    b_pred = a_to_b(a, T_hat, s_hat)          # reconstruct b from a
-    a_pred = b_to_a(b, T_hat, s_hat)          # reconstruct a from b
+    npz_file_path = './scene_output.npz'
+    json_file_path = './sampled_big_room_undistort/transforms.json'
+
+    data = np.load(npz_file_path)
+
+    point_cloud_vertices = data.get('point_cloud')
+    point_cloud_colors = data.get('point_cloud_colors')
+
+    extrinsics = data.get('extrinsics')
+    world_to_camera_vggt = np.zeros((extrinsics.shape[0],4,4))
+    world_to_camera_vggt[:,:3,:] = extrinsics 
+    world_to_camera_vggt[:,3,3] = 1
+    camera_to_world_vggt = np.linalg.inv(world_to_camera_vggt)
+
+    with open(json_file_path,'r') as f:
+        json_data = json.load(f)
+    frames = json_data['frames']
+    all_transform = []
+    for frame in frames:
+        all_transform.append(frame['transform_matrix'])
+    camera_to_world_json = np.array(all_transform)
+
+    T_hat, s_hat = solve_T_s(camera_to_world_vggt, camera_to_world_json)
+    print(T_hat, s_hat)
+
+    b_pred = a_to_b(camera_to_world_vggt, T_hat, s_hat)          # reconstruct b from a
+    # a_pred = b_to_a(b, T_hat, s_hat)          # reconstruct a from b
 
     # quick sanity-check
-    rot_err  = np.max(np.linalg.norm(b_pred[:, :3, :3] - b[:, :3, :3], axis=(1, 2)))
-    trans_err = np.max(np.linalg.norm(b_pred[:, :3, 3] - b[:, :3, 3], axis=1))
+    rot_err  = np.max(np.linalg.norm(b_pred[:, :3, :3] - camera_to_world_json[:, :3, :3], axis=(1, 2)))
+    trans_err = np.max(np.linalg.norm(b_pred[:, :3, 3] - camera_to_world_json[:, :3, 3], axis=1))
     print(f"max orientation error: {rot_err:.3e}")
     print(f"max translation error: {trans_err:.3e}")
 
-    
+    transformed_point_cloud = transform_point_cloud(point_cloud_vertices, T_hat, s_hat)
+
+    fig = pv.Plotter()
+    fig.set_background('white')
+    visualize_point_cloud(fig, transformed_point_cloud, point_cloud_colors)
+    # Global XYZ reference axes (world frame)
+    fig.add_mesh(pv.Line((0, 0, 0), (10, 0, 0)), color="red",   line_width=4)
+    fig.add_mesh(pv.Line((0, 0, 0), (0, 10, 0)), color="green", line_width=4)
+    fig.add_mesh(pv.Line((0, 0, 0), (0, 0, 10)), color="blue",  line_width=4)
+
+    for i in range(camera_to_world_json.shape[0]):           # rgb_path unused here
+
+        # Full camera rotation with –5° pitch offset applied
+        pos = camera_to_world_json[i,:3,3]
+        R_final = camera_to_world_json[i,:3,:3]
+
+        # Local axes endpoints
+        x_end = pos + R_final @ np.array([0.5, 0, 0])
+        y_end = pos + R_final @ np.array([0, 0.5, 0])
+        z_end = pos + R_final @ np.array([0, 0, 0.5])
+
+        # Draw camera-frame axes (short lines)
+        fig.add_mesh(pv.Line(pos, x_end), color="red",   line_width=4)
+        fig.add_mesh(pv.Line(pos, y_end), color="green", line_width=4)
+        fig.add_mesh(pv.Line(pos, z_end), color="blue",  line_width=4)
+
+        # Red point marking the camera position
+        fig.add_mesh(pv.Sphere(radius=0.01, center=pos), color="red")
+
+    fig.show()
+
+
+    save_point_cloud_to_ply('output_point_cloud_transformed.ply', transformed_point_cloud, point_cloud_colors)
