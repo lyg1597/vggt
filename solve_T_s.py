@@ -143,10 +143,12 @@ def visualize_point_cloud(plotter, points, colors):
         point_size=5,
         scalars="colors",
         rgb=True,
-        ambient=1.0
+        ambient=1.0,
+        show_edges=False, 
+        lighting=False,
     )
     plotter.add_title("Transformed Point Cloud (JSON Frame)", font_size=12)
-    plotter.enable_eye_dome_lighting()
+    # plotter.enable_eye_dome_lighting()
     plotter.add_axes()
     print("Close the PyVista window to exit the script.")
     # plotter.show()
@@ -225,6 +227,10 @@ if __name__ == "__main__":
     for frame in frames:
         all_transform.append(frame['transform_matrix'])
     camera_to_world_json = np.array(all_transform)
+    trans_off = np.zeros((4,4))    
+    trans_off[:3,:3] = Rotation.from_euler('xyz',[0,-19,0], degrees=True).as_matrix()
+    trans_off[3,3] = 1
+    camera_to_world_json = camera_to_world_json@trans_off
 
     refl_matrix = np.array([
         [0,-1,0,0],
@@ -233,7 +239,7 @@ if __name__ == "__main__":
         [0,0,0,1]
     ])
     camera_to_world_vggt = camera_to_world_vggt @ refl_matrix
-    T_hat, s_hat = solve_T_s(camera_to_world_vggt, camera_to_world_json)
+    T_hat, s_hat = solve_T_s(camera_to_world_vggt[:10], camera_to_world_json[:10])
     print(T_hat, s_hat)
 
     camera_to_world_vggt_transformed = a_to_b(camera_to_world_vggt, T_hat, s_hat)          # reconstruct b from a
@@ -255,7 +261,7 @@ if __name__ == "__main__":
     transformed_point_cloud_masked = transformed_point_cloud[mask]
     point_cloud_colors_masked = point_cloud_colors[mask]
 
-    fig = visualize_point_cloud(fig, transformed_point_cloud_masked, point_cloud_colors_masked)
+    # fig = visualize_point_cloud(fig, transformed_point_cloud_masked, point_cloud_colors_masked)
     # Global XYZ reference axes (world frame)
     fig.add_mesh(pv.Line((0, 0, 0), (10, 0, 0)), color="red",   line_width=4)
     fig.add_mesh(pv.Line((0, 0, 0), (0, 10, 0)), color="green", line_width=4)
