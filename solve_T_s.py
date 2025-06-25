@@ -142,7 +142,8 @@ def visualize_point_cloud(plotter, points, colors):
         render_points_as_spheres=True,
         point_size=5,
         scalars="colors",
-        rgb=True
+        rgb=True,
+        ambient=1.0
     )
     plotter.add_title("Transformed Point Cloud (JSON Frame)", font_size=12)
     plotter.enable_eye_dome_lighting()
@@ -150,6 +151,38 @@ def visualize_point_cloud(plotter, points, colors):
     print("Close the PyVista window to exit the script.")
     # plotter.show()
     return plotter
+
+def visualize_cameras(
+        fig, 
+        camera_poses,
+        x_color = 'red',
+        y_color = 'green',
+        z_color = 'blue',
+        line_length = 0.5,
+        line_width = 4,
+        marker_color = 'red',
+        marker_size = 0.01,
+    ):
+    for i in range(camera_poses.shape[0]):           # rgb_path unused here
+
+        # Full camera rotation with –5° pitch offset applied
+        pos = camera_poses[i,:3,3]
+        R_final = camera_poses[i,:3,:3]
+
+        # Local axes endpoints
+        x_end = pos + R_final @ np.array([line_length, 0, 0])
+        y_end = pos + R_final @ np.array([0, line_length, 0])
+        z_end = pos + R_final @ np.array([0, 0, line_length])
+
+        # Draw camera-frame axes (short lines)
+        fig.add_mesh(pv.Line(pos, x_end), color=x_color,   line_width=line_width)
+        fig.add_mesh(pv.Line(pos, y_end), color=y_color, line_width=line_width)
+        fig.add_mesh(pv.Line(pos, z_end), color=z_color,  line_width=line_width)
+
+        # Red point marking the camera position
+        fig.add_mesh(pv.Sphere(radius=marker_size, center=pos), color=marker_color)
+
+    return fig
 
 def save_point_cloud_to_ply(filename, points, colors):
     """
@@ -193,48 +226,45 @@ if __name__ == "__main__":
         all_transform.append(frame['transform_matrix'])
     camera_to_world_json = np.array(all_transform)
 
+    refl_matrix = np.array([
+        [0,-1,0,0],
+        [0,0,-1,0],
+        [1,0,0,0],
+        [0,0,0,1]
+    ])
+    camera_to_world_vggt = camera_to_world_vggt @ refl_matrix
     T_hat, s_hat = solve_T_s(camera_to_world_vggt, camera_to_world_json)
     print(T_hat, s_hat)
 
-    b_pred = a_to_b(camera_to_world_vggt, T_hat, s_hat)          # reconstruct b from a
+    camera_to_world_vggt_transformed = a_to_b(camera_to_world_vggt, T_hat, s_hat)          # reconstruct b from a
     # a_pred = b_to_a(b, T_hat, s_hat)          # reconstruct a from b
+    # refl_matrix = np.eye(4)
 
     # quick sanity-check
-    rot_err  = np.max(np.linalg.norm(b_pred[:, :3, :3] - camera_to_world_json[:, :3, :3], axis=(1, 2)))
-    trans_err = np.max(np.linalg.norm(b_pred[:, :3, 3] - camera_to_world_json[:, :3, 3], axis=1))
+    rot_err  = np.max(np.linalg.norm(camera_to_world_vggt_transformed[:, :3, :3] - camera_to_world_json[:, :3, :3], axis=(1, 2)))
+    trans_err = np.max(np.linalg.norm(camera_to_world_vggt_transformed[:, :3, 3] - camera_to_world_json[:, :3, 3], axis=1))
     print(f"max orientation error: {rot_err:.3e}")
     print(f"max translation error: {trans_err:.3e}")
+    print(np.linalg.norm(camera_to_world_vggt_transformed[:, :3, :3] - camera_to_world_json[:, :3, :3], axis=(1, 2)))
 
     transformed_point_cloud = transform_point_cloud(point_cloud_vertices, T_hat, s_hat)
 
     fig = pv.Plotter()
     fig.set_background('white')
-    visualize_point_cloud(fig, transformed_point_cloud, point_cloud_colors)
+    mask = transformed_point_cloud[:,2]<1.5
+    transformed_point_cloud_masked = transformed_point_cloud[mask]
+    point_cloud_colors_masked = point_cloud_colors[mask]
+
+    fig = visualize_point_cloud(fig, transformed_point_cloud_masked, point_cloud_colors_masked)
     # Global XYZ reference axes (world frame)
     fig.add_mesh(pv.Line((0, 0, 0), (10, 0, 0)), color="red",   line_width=4)
     fig.add_mesh(pv.Line((0, 0, 0), (0, 10, 0)), color="green", line_width=4)
     fig.add_mesh(pv.Line((0, 0, 0), (0, 0, 10)), color="blue",  line_width=4)
 
-    for i in range(camera_to_world_json.shape[0]):           # rgb_path unused here
+    fig = visualize_cameras(fig, camera_to_world_json, x_color = 'blue', y_color='blue', z_color='blue', marker_color='blue', line_length=0.25, marker_size=0.05)
 
-        # Full camera rotation with –5° pitch offset applied
-        pos = camera_to_world_json[i,:3,3]
-        R_final = camera_to_world_json[i,:3,:3]
-
-        # Local axes endpoints
-        x_end = pos + R_final @ np.array([0.5, 0, 0])
-        y_end = pos + R_final @ np.array([0, 0.5, 0])
-        z_end = pos + R_final @ np.array([0, 0, 0.5])
-
-        # Draw camera-frame axes (short lines)
-        fig.add_mesh(pv.Line(pos, x_end), color="red",   line_width=4)
-        fig.add_mesh(pv.Line(pos, y_end), color="green", line_width=4)
-        fig.add_mesh(pv.Line(pos, z_end), color="blue",  line_width=4)
-
-        # Red point marking the camera position
-        fig.add_mesh(pv.Sphere(radius=0.01, center=pos), color="red")
+    fig = visualize_cameras(fig, camera_to_world_vggt_transformed, x_color = 'red', y_color='red', z_color='red', marker_color='red', line_length=0.25, marker_size=0.05)
 
     fig.show()
-
 
     save_point_cloud_to_ply('output_point_cloud_transformed.ply', transformed_point_cloud, point_cloud_colors)
