@@ -102,7 +102,7 @@ def extract_and_filter_scene(
         colors_rgb = images_np
 
     # Reshape colors to a flat list and scale to 0-255
-    colors_rgb = (colors_rgb.reshape(-1, 3) * 255).astype(np.uint8)
+    colors_rgb_reshaped = (colors_rgb.reshape(-1, 3) * 255).astype(np.uint8)
     # --- End of new color logic ---
 
     if branch == 'pointmap':
@@ -127,7 +127,7 @@ def extract_and_filter_scene(
 
     # Apply the same mask to both vertices and colors
     filtered_vertices = vertices_3d[conf_mask]
-    filtered_colors = colors_rgb[conf_mask]
+    filtered_colors = colors_rgb_reshaped[conf_mask]
 
     print(f"Filtered point cloud and colors from {len(vertices_3d)} to {len(filtered_vertices)} points.")
 
@@ -136,7 +136,10 @@ def extract_and_filter_scene(
         "extrinsics": extrinsics,
         "intrinsics": intrinsics,
         "point_cloud": filtered_vertices,
-        "point_cloud_colors": filtered_colors
+        "point_cloud_colors": filtered_colors,
+        "raw_point_cloud": pred_world_points,
+        "raw_point_conf": pred_world_points_conf,
+        "raw_point_color": colors_rgb,
     }
 
 # --- Step 5: Visualization ---
@@ -190,7 +193,12 @@ def main(args):
             args.output_file,
             extrinsics=final_results['extrinsics'],
             intrinsics=final_results['intrinsics'],
-            point_cloud=final_results['point_cloud']
+            point_cloud=final_results['point_cloud'],
+            point_cloud_colors = final_results['point_cloud_colors'],
+            raw_point_cloud = final_results["raw_point_cloud"],
+            raw_point_conf = final_results["raw_point_conf"],
+            raw_point_color = final_results["raw_point_color"],
+
         )
         print(f"\nResults saved to: {args.output_file}")
         

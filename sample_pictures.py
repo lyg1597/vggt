@@ -42,7 +42,7 @@ if __name__ == "__main__":
     new_transforms_json['frames'] = []
 
     frames = transforms_json['frames']
-    for i in range(0,len(frames),args.skip_interval):
+    for i in range(500,len(frames),args.skip_interval):
         frame = frames[i]
         new_transforms_json['frames'].append(frame)
         
@@ -54,4 +54,4 @@ if __name__ == "__main__":
 
     output_json_fn = os.path.join(args.output_folder, 'transforms.json')
     with open(output_json_fn, 'w+') as f:
-        json.dump(new_transforms_json, f, indent=4)
+        json.dump(new_transforms_json, f, indent=3)
