@@ -19,6 +19,8 @@ from vggt.utils.load_fn import load_and_preprocess_images
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.utils.geometry import unproject_depth_map_to_point_map
 
+from solve_T_s import solve_T_s, a_to_b, transform_point_cloud_a_to_b
+
 # --- Step 1: Model Loading ---
 def load_vggt_model() -> (VGGT, str):
     print("Initializing and loading VGGT model...")
@@ -184,25 +186,95 @@ def visualize_point_cloud(vertices: np.ndarray, colors: np.ndarray):
     print("Close the PyVista window to exit the script.")
     plotter.show()
 
+def concate_results(result1, result2=None, overlap=[]):
+    '''
+    The function takes point cloud result1 and result2 and concatenate them together
+    The concatenation can only happen when there's overlapping frames between result1 and result2
+    The index of overlapping frames in result1 is specified by overlap
+    The overlapping frames in result2 is specified by result2[:len(overlap)]
+
+    :param result1: The first point cloud
+    :type result1: Dict
+    :param result2: The second point cloud
+    :type result2: Dict
+    :param overlap: The index of overlapping frames
+    :type result2: List[int]
+    ...
+    :return: The concatenated point clouds
+    :rtype: Dict
+    '''
+    
+    # If result2 is empty, return result1
+    if result2 is None:
+        return result1
+
+    # Get the corresponding extrinsics from result1 and result2
+    extrinsics1 = result1['extrinsics']
+    extrinsics2 = result2['extrinsics']
+    addon = np.zeros((extrinsics1.shape[0], 1, 4))
+    addon[:,0,3] = 1
+    extrinsics1 = np.concatenate((extrinsics1, addon), axis=1)
+    addon = np.zeros((extrinsics2.shape[0], 1, 4))
+    addon[:,0,3] = 1
+    extrinsics2 = np.concatenate((extrinsics2, addon), axis=1)
+
+    overlap1 = extrinsics1[overlap]
+    overlap2 = extrinsics2[:len(overlap)]
+
+    # Compute transformation from result2 to result1
+    T, s = solve_T_s(overlap2, overlap1)
+
+    # Apply transformation to both the point cloud and extrinsics
+    # point_cloud2 = result2['point_cloud']
+    # point_cloud2_shape = point_cloud2.shape
+    # point_cloud2 = np.reshape(point_cloud2, (-1,3))
+    raw_point_cloud2 = result2['raw_point_cloud']
+    raw_point_cloud2 = raw_point_cloud2
+    raw_point_cloud2_shape = raw_point_cloud2.shape
+    raw_point_cloud2 = np.reshape(raw_point_cloud2, (-1,3))
+    # point_cloud2_transformed = transform_point_cloud_a_to_b(point_cloud2[len(overlap):], T, s)
+    raw_point_cloud2_transformed = transform_point_cloud_a_to_b(raw_point_cloud2, T, s)
+    # point_cloud2_transformed = np.reshape(point_cloud2_transformed, point_cloud2_shape)
+    raw_point_cloud2_transformed = np.reshape(raw_point_cloud2_transformed, raw_point_cloud2_shape)
+    extrinsics2_transformed = a_to_b(extrinsics2, T, s)
+
+    # Append the results to result1 
+    final_results = {}
+    final_results['extrinsics'] = np.concatenate((result1['extrinsics'], extrinsics2_transformed[len(overlap):,:3,:]), axis=0)
+    final_results['intrinsics'] = np.concatenate((result1['intrinsics'], result2['intrinsics'][len(overlap):]), axis=0)
+    # final_results['point_cloud'] = np.concatenate((result1['point_cloud'], point_cloud2_transformed), axis=0)
+    final_results['point_cloud_colors'] = np.concatenate((result1['point_cloud_colors'], result2['point_cloud_colors'][len(overlap):]), axis=0)
+    final_results['raw_point_cloud'] = np.concatenate((result1['raw_point_cloud'], raw_point_cloud2_transformed[len(overlap):]), axis=0)
+    final_results["raw_point_conf"] = np.concatenate((result1['raw_point_conf'], result2['raw_point_conf'][len(overlap):]), axis=0)
+    final_results["raw_point_color"] = np.concatenate((result1['raw_point_color'], result2['raw_point_color'][len(overlap):]), axis=0)
+
+    return final_results
+
 def main(args):
     model, device = load_vggt_model()
     images = preprocess_input_images(args.image_dir, device)
     if images is None:
         return
-    raw_predictions = run_model_inference(model, images)
-    final_results = extract_and_filter_scene(raw_predictions, images.shape, args.conf_thres, args.branch)
+    images1 = images[:8]
+    images2 = images[2:]
+    raw_predictions1 = run_model_inference(model, images1)
+    final_results1 = extract_and_filter_scene(raw_predictions1, images1.shape, args.conf_thres, args.branch)
+    raw_predictions2 = run_model_inference(model, images2)
+    final_results2 = extract_and_filter_scene(raw_predictions2, images2.shape, args.conf_thres, args.branch)
     
+    final_results = concate_results(final_results1, final_results2, list(range(2,8)))
+
     if final_results:
         print("\n--- Computation Successful ---")
         print(f"Extrinsics shape: {final_results['extrinsics'].shape}")
         print(f"Intrinsics shape: {final_results['intrinsics'].shape}")
-        print(f"Point Cloud shape: {final_results['point_cloud'].shape}")
+        # print(f"Point Cloud shape: {final_results['point_cloud'].shape}")
         
         np.savez_compressed(
             args.output_file,
             extrinsics=final_results['extrinsics'],
             intrinsics=final_results['intrinsics'],
-            point_cloud=final_results['point_cloud'],
+            # point_cloud=final_results['point_cloud'],
             point_cloud_colors = final_results['point_cloud_colors'],
             raw_point_cloud = final_results["raw_point_cloud"],
             raw_point_conf = final_results["raw_point_conf"],

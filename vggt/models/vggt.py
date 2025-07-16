@@ -56,6 +56,10 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
         if query_points is not None and len(query_points.shape) == 2:
             query_points = query_points.unsqueeze(0)
 
+        # Input: Tensor 1*N*3*width*height
+        # Output: 
+        #   aggregated_token_list: List[24], Tensor 1*N*1041*2048
+        #   patch_start_idx: int
         aggregated_tokens_list, patch_start_idx = self.aggregator(images)
 
         predictions = {}

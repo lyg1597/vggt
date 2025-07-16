@@ -97,6 +97,58 @@ def b_to_a(b, T, s):
     a_pred[:, :3, 3] /= s                 # undo the scale on translation
     return a_pred
 
+def transform_point_cloud_a_to_b(points_a, T, s):
+    """
+    Transforms a point cloud from frame A (vggt) to frame B (json).
+
+    Args:
+        points (np.ndarray): A NumPy array of shape (N, 3) for point coordinates.
+        T (np.ndarray): The 4x4 transformation matrix from solve_T_s.
+        s (float): The scale factor from solve_T_s.
+
+    Returns:
+        np.ndarray: The transformed point cloud of shape (N, 3).
+    """
+    # First, scale the points
+    points_scaled = points_a * s
+
+    # To apply the 4x4 transform, we need to convert points to homogeneous coordinates (N, 4)
+    # by adding a '1' at the end of each point vector.
+    points_homogeneous = np.hstack([points_scaled, np.ones((points_a.shape[0], 1))])
+
+    # Apply the transformation matrix T
+    # T is (4, 4), points_homogeneous.T is (4, N). The result is (4, N).
+    transformed_points_homogeneous = (T @ points_homogeneous.T).T
+
+    # Convert back from homogeneous coordinates by dropping the last column
+    return transformed_points_homogeneous[:, :3]
+
+def transform_point_cloud_b_to_a(points_a, T, s):
+    """
+    Transforms a point cloud from frame A (vggt) to frame B (json).
+
+    Args:
+        points (np.ndarray): A NumPy array of shape (N, 3) for point coordinates.
+        T (np.ndarray): The 4x4 transformation matrix from solve_T_s.
+        s (float): The scale factor from solve_T_s.
+
+    Returns:
+        np.ndarray: The transformed point cloud of shape (N, 3).
+    """
+    # First, scale the points
+    points_scaled = points_a/s
+
+    # To apply the 4x4 transform, we need to convert points to homogeneous coordinates (N, 4)
+    # by adding a '1' at the end of each point vector.
+    points_homogeneous = np.hstack([points_scaled, np.ones((points_a.shape[0], 1))])
+
+    # Apply the transformation matrix T
+    # T is (4, 4), points_homogeneous.T is (4, N). The result is (4, N).
+    transformed_points_homogeneous = (np.linalg.inv(T) @ points_homogeneous.T).T
+
+    # Convert back from homogeneous coordinates by dropping the last column
+    return transformed_points_homogeneous[:, :3]
+
 def transform_point_cloud(points, T, s):
     """
     Transforms a point cloud from frame A (vggt) to frame B (json).
@@ -140,7 +192,7 @@ def visualize_point_cloud(plotter, points, colors):
     plotter.add_mesh(
         cloud,
         render_points_as_spheres=True,
-        point_size=5,
+        point_size=1,
         scalars="colors",
         rgb=True,
         ambient=1.0,
@@ -239,7 +291,7 @@ if __name__ == "__main__":
         [0,0,0,1]
     ])
     camera_to_world_vggt = camera_to_world_vggt @ refl_matrix
-    T_hat, s_hat = solve_T_s(camera_to_world_vggt[:10], camera_to_world_json[:10])
+    T_hat, s_hat = solve_T_s(camera_to_world_vggt[:], camera_to_world_json[:])
     print(T_hat, s_hat)
 
     camera_to_world_vggt_transformed = a_to_b(camera_to_world_vggt, T_hat, s_hat)          # reconstruct b from a
@@ -261,16 +313,25 @@ if __name__ == "__main__":
     transformed_point_cloud_masked = transformed_point_cloud[mask]
     point_cloud_colors_masked = point_cloud_colors[mask]
 
-    # fig = visualize_point_cloud(fig, transformed_point_cloud_masked, point_cloud_colors_masked)
+    fig = visualize_point_cloud(fig, transformed_point_cloud_masked, point_cloud_colors_masked)
     # Global XYZ reference axes (world frame)
-    fig.add_mesh(pv.Line((0, 0, 0), (10, 0, 0)), color="red",   line_width=4)
-    fig.add_mesh(pv.Line((0, 0, 0), (0, 10, 0)), color="green", line_width=4)
-    fig.add_mesh(pv.Line((0, 0, 0), (0, 0, 10)), color="blue",  line_width=4)
+    # fig.add_mesh(pv.Line((0, 0, 0), (10, 0, 0)), color="red",   line_width=4)
+    # fig.add_mesh(pv.Line((0, 0, 0), (0, 10, 0)), color="green", line_width=4)
+    # fig.add_mesh(pv.Line((0, 0, 0), (0, 0, 10)), color="blue",  line_width=4)
 
-    fig = visualize_cameras(fig, camera_to_world_json, x_color = 'blue', y_color='blue', z_color='blue', marker_color='blue', line_length=0.25, marker_size=0.05)
+    fig = visualize_cameras(fig, camera_to_world_json, x_color = 'red', y_color='green', z_color='blue', marker_color='blue', line_length=0.25, marker_size=0.05)
 
-    fig = visualize_cameras(fig, camera_to_world_vggt_transformed, x_color = 'red', y_color='red', z_color='red', marker_color='red', line_length=0.25, marker_size=0.05)
+    # fig = visualize_cameras(fig, camera_to_world_vggt_transformed, x_color = 'red', y_color='red', z_color='red', marker_color='red', line_length=0.25, marker_size=0.05)
 
     fig.show()
 
     save_point_cloud_to_ply('output_point_cloud_transformed.ply', transformed_point_cloud, point_cloud_colors)
+
+    points_all = data.get('raw_point_cloud')
+    colors_all = data.get('raw_point_color')
+    conf_all = data.get('raw_point_conf')
+
+    # orig_shape = points_all.shape
+    # points_all = np.reshape(points_all, (orig_shape[0], orig_shape[1]*orig_shape[2], orig_shape[3]))
+    # colors_all = np.reshape(colors_all, (orig_shape[0], orig_shape[1]*orig_shape[2], orig_shape[3]))
+    # conf_all = np.reshape(conf_all, (orig_shape[0], orig_shape[1]*orig_shape[2], orig_shape[3]))
