@@ -255,14 +255,36 @@ def main(args):
     images = preprocess_input_images(args.image_dir, device)
     if images is None:
         return
-    images1 = images[:8]
-    images2 = images[2:]
+    images1 = images[:15]
+    images2 = images[1:]
     raw_predictions1 = run_model_inference(model, images1)
     final_results1 = extract_and_filter_scene(raw_predictions1, images1.shape, args.conf_thres, args.branch)
+    np.savez_compressed(
+        'tmp1.npz',
+        extrinsics=final_results1['extrinsics'],
+        intrinsics=final_results1['intrinsics'],
+        point_cloud=final_results1['point_cloud'],
+        point_cloud_colors = final_results1['point_cloud_colors'],
+        raw_point_cloud = final_results1["raw_point_cloud"],
+        raw_point_conf = final_results1["raw_point_conf"],
+        raw_point_color = final_results1["raw_point_color"],
+
+    )
     raw_predictions2 = run_model_inference(model, images2)
     final_results2 = extract_and_filter_scene(raw_predictions2, images2.shape, args.conf_thres, args.branch)
+    np.savez_compressed(
+        'tmp2.npz',
+        extrinsics=final_results2['extrinsics'],
+        intrinsics=final_results2['intrinsics'],
+        point_cloud=final_results2['point_cloud'],
+        point_cloud_colors = final_results2['point_cloud_colors'],
+        raw_point_cloud = final_results2["raw_point_cloud"],
+        raw_point_conf = final_results2["raw_point_conf"],
+        raw_point_color = final_results2["raw_point_color"],
+
+    )
     
-    final_results = concate_results(final_results1, final_results2, list(range(2,8)))
+    final_results = concate_results(final_results1, final_results2, list(range(1, 15)))
 
     if final_results:
         print("\n--- Computation Successful ---")
