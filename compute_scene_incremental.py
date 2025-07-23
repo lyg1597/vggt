@@ -255,7 +255,7 @@ def main(args):
     images = preprocess_input_images(args.image_dir, device)
     if images is None:
         return
-    images1 = images[:15]
+    images1 = images[:images.shape[0]-1]
     images2 = images[1:]
     raw_predictions1 = run_model_inference(model, images1)
     final_results1 = extract_and_filter_scene(raw_predictions1, images1.shape, args.conf_thres, args.branch)
@@ -284,7 +284,7 @@ def main(args):
 
     )
     
-    final_results = concate_results(final_results1, final_results2, list(range(1, 15)))
+    final_results = concate_results(final_results1, final_results2, list(range(1, images.shape[0]-1)))
 
     if final_results:
         print("\n--- Computation Successful ---")
