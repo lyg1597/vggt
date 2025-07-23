@@ -209,7 +209,14 @@ def concate_results(point_cloud, extrinsics1, result2=None, filenames = None):
     
     # # If result2 is empty, return result1
     if extrinsics1 == []:
-        pass
+        extrinsics2 = result2['extrinsics']
+        raw_point_cloud2 = result2['raw_point_cloud']
+        raw_point_cloud2_colors = result2['raw_point_color']
+        final_extrinsics = []
+        for i in range(extrinsics2.shape[0]):
+            final_extrinsics.append((filenames[i], extrinsics2[i]))
+        final_point_cloud = np.concatenate((raw_point_cloud2, raw_point_cloud2_colors), axis=1)
+        return final_point_cloud, final_extrinsics
 
     # Get the corresponding extrinsics from result1 and result2
     # extrinsics1 = result1['extrinsics']
@@ -240,15 +247,15 @@ def concate_results(point_cloud, extrinsics1, result2=None, filenames = None):
     raw_point_cloud2_transformed = np.reshape(raw_point_cloud2_transformed, raw_point_cloud2_shape)
     extrinsics2_transformed = a_to_b(extrinsics2[-1:], T, s)
 
-    final_extrinsics = final_extrinsics.append((filenames, extrinsics2_transformed[0]))
+    final_extrinsics = final_extrinsics.append((filenames[-1], extrinsics2_transformed[0]))
 
     raw_point_cloud2_transformed = np.concatenate((raw_point_cloud2_transformed, raw_point_cloud2_colors), axis=1)
 
     raw_point_cloud2_transformed[:,:3] = raw_point_cloud2_transformed[:,:3]*100
 
-    final_results = np.concatenate((point_cloud, raw_point_cloud2_transformed), axis=0)
+    final_point_cloud = np.concatenate((point_cloud, raw_point_cloud2_transformed), axis=0)
 
-    df = pd.DataFrame(final_results)
+    df = pd.DataFrame(final_point_cloud)
 
     # 2. ✨ Quantize the first three columns ✨
     #    Multiply by the factor, round to the nearest integer, and convert the type.
@@ -258,10 +265,10 @@ def concate_results(point_cloud, extrinsics1, result2=None, filenames = None):
     result_df = df.groupby([0, 1, 2], as_index=False).mean()
 
     # 4. Convert back to a NumPy array
-    final_results = result_df.to_numpy()
+    final_point_cloud = result_df.to_numpy()
 
     # Perform point cloud quantization to merge point cloud 
-    return final_results, final_extrinsics
+    return final_point_cloud, final_extrinsics
 
 def is_close(transform1, transform2):
     if np.linalg.norm(transform1[:,3]-transform2[:,3])>0.1 or \
@@ -294,7 +301,7 @@ def main(args):
         images = preprocess_input_images(args.image_dir, filenames, device)
         raw_predictions = run_model_inference(model, images)
         final_results = extract_and_filter_scene(raw_predictions, images.shape, args.conf_thres, args.branch)
-        point_cloud = concate_results(point_cloud, extrinsics, final_results, filenames)
+        point_cloud, extrinsics = concate_results(point_cloud, extrinsics, final_results, filenames)
     # images = preprocess_input_images(args.image_dir, device)
     # if images is None:
     #     return
