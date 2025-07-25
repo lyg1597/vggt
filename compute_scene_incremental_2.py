@@ -286,8 +286,11 @@ def main(args):
     extrinsics = []
     filenames = []
     point_cloud = np.zeros((0,6))
-    prev_transform = None 
+    prev_transform = None
+    idx = 0 
     for frame_idx in range(len(frames)):
+        if idx>=2:
+            break
         frame = frames[frame_idx]
         transform_matrix = np.array(frame['transform_matrix'])
         image_fn = frame['file_path']
@@ -296,68 +299,39 @@ def main(args):
         else:
             filenames.append(image_fn)
             prev_transform = transform_matrix
-        if len(filenames<34):
+        if len(filenames<args.num_batch):
             continue 
         images = preprocess_input_images(args.image_dir, filenames, device)
         raw_predictions = run_model_inference(model, images)
         final_results = extract_and_filter_scene(raw_predictions, images.shape, args.conf_thres, args.branch)
         point_cloud, extrinsics = concate_results(point_cloud, extrinsics, final_results, filenames)
-    # images = preprocess_input_images(args.image_dir, device)
-    # if images is None:
-    #     return
-    # images1 = images[:15]
-    # images2 = images[1:]
-    # raw_predictions1 = run_model_inference(model, images1)
-    # final_results1 = extract_and_filter_scene(raw_predictions1, images1.shape, args.conf_thres, args.branch)
-    # np.savez_compressed(
-    #     'tmp1.npz',
-    #     extrinsics=final_results1['extrinsics'],
-    #     intrinsics=final_results1['intrinsics'],
-    #     point_cloud=final_results1['point_cloud'],
-    #     point_cloud_colors = final_results1['point_cloud_colors'],
-    #     raw_point_cloud = final_results1["raw_point_cloud"],
-    #     raw_point_conf = final_results1["raw_point_conf"],
-    #     raw_point_color = final_results1["raw_point_color"],
 
-    # )
-    # raw_predictions2 = run_model_inference(model, images2)
-    # final_results2 = extract_and_filter_scene(raw_predictions2, images2.shape, args.conf_thres, args.branch)
-    # np.savez_compressed(
-    #     'tmp2.npz',
-    #     extrinsics=final_results2['extrinsics'],
-    #     intrinsics=final_results2['intrinsics'],
-    #     point_cloud=final_results2['point_cloud'],
-    #     point_cloud_colors = final_results2['point_cloud_colors'],
-    #     raw_point_cloud = final_results2["raw_point_cloud"],
-    #     raw_point_conf = final_results2["raw_point_conf"],
-    #     raw_point_color = final_results2["raw_point_color"],
+        np.savez_compressed(
+            f'tmp{idx+1}.npz',
+            extrinsics=final_results1['extrinsics'],
+            intrinsics=final_results1['intrinsics'],
+            point_cloud=final_results1['point_cloud'],
+            point_cloud_colors = final_results1['point_cloud_colors'],
+            raw_point_cloud = final_results1["raw_point_cloud"],
+            raw_point_conf = final_results1["raw_point_conf"],
+            raw_point_color = final_results1["raw_point_color"],
+            filenames = np.array(filenames)
+        )
 
-    # )
-    
-    # final_results = concate_results(final_results1, final_results2, list(range(1, 15)))
+        idx += 1
+        filenames.pop(0)
 
-    # if final_results:
-    #     print("\n--- Computation Successful ---")
-    #     print(f"Extrinsics shape: {final_results['extrinsics'].shape}")
-    #     print(f"Intrinsics shape: {final_results['intrinsics'].shape}")
-    #     # print(f"Point Cloud shape: {final_results['point_cloud'].shape}")
-        
-    #     np.savez_compressed(
-    #         args.output_file,
-    #         extrinsics=final_results['extrinsics'],
-    #         intrinsics=final_results['intrinsics'],
-    #         # point_cloud=final_results['point_cloud'],
-    #         point_cloud_colors = final_results['point_cloud_colors'],
-    #         raw_point_cloud = final_results["raw_point_cloud"],
-    #         raw_point_conf = final_results["raw_point_conf"],
-    #         raw_point_color = final_results["raw_point_color"],
-
-    #     )
-    #     print(f"\nResults saved to: {args.output_file}")
-        
-    #     if args.visualize:
-    #         visualize_point_cloud(final_results['point_cloud'], final_results['point_cloud_colors'])
-
+    extrinsics_matrices = []
+    frames_fns = []
+    for i in range(len(extrinsics)):
+        extrinsics_matrices.append(extrinsics[i][1])
+        frames_fns.append(extrinsics[i][0])
+    np.savez_compressed(
+        f'point_cloud.npz',
+        pint_cloud = point_cloud,
+        extrinsics = np.array(extrinsics_matrices),
+        frame_fns = np.array(frames_fns)
+    )
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run VGGT to compute camera parameters and a point cloud from images.")
@@ -375,6 +349,12 @@ if __name__ == "__main__":
         "--visualize",
         action="store_true",
         help="If set, display the point cloud in an interactive window after computation."
+    )
+    parser.add_argument(
+        "--num_batch",
+        type = int,
+        default = 35,
+        help="number of frames in the batch"
     )
     
     args = parser.parse_args()
