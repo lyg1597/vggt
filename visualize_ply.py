@@ -2,7 +2,7 @@ import pyvista as pv
 import os
 
 # --- Configuration ---
-ply_file_path = 'output_point_cloud.ply'
+ply_file_path = 'step_res/res_00002.ply'
 
 # --- Check if the file exists ---
 if not os.path.exists(ply_file_path):
@@ -30,8 +30,8 @@ else:
     plotter.add_mesh(
         point_cloud,
         render_points_as_spheres=True,
-        point_size=1,
-        scalars=point_cloud.point_data['RGBA'],
+        point_size=5,
+        scalars=point_cloud.point_data['RGB'],
         rgb=True,
         ambient=1.0,
         show_edges=False, 
