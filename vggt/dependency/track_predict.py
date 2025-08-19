@@ -169,7 +169,7 @@ def _forward_on_query(
     frame_num, _, height, width = images.shape
 
     query_image = images[query_index]
-    query_points = extract_keypoints(query_image, keypoint_extractors, round_keypoints=False)
+    query_points = extract_keypoints(query_image.to(torch.float32), keypoint_extractors, round_keypoints=False).to(query_image.dtype)
     query_points = query_points[:, torch.randperm(query_points.shape[1], device=device)]
 
     # Extract the color at the keypoint locations

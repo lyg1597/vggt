@@ -72,14 +72,13 @@ def run_VGGT(model, images, dtype, resolution=518):
     images = F.interpolate(images, size=(resolution, resolution), mode="bilinear", align_corners=False)
 
     with torch.no_grad():
-        with torch.cuda.amp.autocast(dtype=dtype):
-            images = images[None]  # add batch dimension
-            aggregated_tokens_list, ps_idx = model.aggregator(images)
+        images = images[None]  # add batch dimension
+        aggregated_tokens_list, ps_idx = model.aggregator(images)
 
         # Predict Cameras
         pose_enc = model.camera_head(aggregated_tokens_list)[-1]
         # Extrinsic and intrinsic matrices, following OpenCV convention (camera from world)
-        extrinsic, intrinsic = pose_encoding_to_extri_intri(pose_enc, images.shape[-2:])
+        extrinsic, intrinsic = pose_encoding_to_extri_intri(pose_enc, images.shape[-2:], dtype=dtype)
         # Predict Depth Maps
         depth_map, depth_conf = model.depth_head(aggregated_tokens_list, images, ps_idx)
 
@@ -104,7 +103,7 @@ def demo_fn(args):
     print(f"Setting seed as: {args.seed}")
 
     # Set device and dtype
-    dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+    dtype = torch.float16
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
     print(f"Using dtype: {dtype}")
@@ -114,7 +113,7 @@ def demo_fn(args):
     _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
     model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
     model.eval()
-    model = model.to(device)
+    model = model.to(torch.float16).to(device)
     print(f"Model loaded")
 
     # Get image paths and preprocess them
@@ -130,7 +129,7 @@ def demo_fn(args):
     img_load_resolution = 1024
 
     images, original_coords = load_and_preprocess_images_square(image_path_list, img_load_resolution)
-    images = images.to(device)
+    images = images.to(torch.float16).to(device)
     original_coords = original_coords.to(device)
     print(f"Loaded {len(images)} images from {image_dir}")
 
@@ -144,26 +143,25 @@ def demo_fn(args):
         scale = img_load_resolution / vggt_fixed_resolution
         shared_camera = args.shared_camera
 
-        with torch.cuda.amp.autocast(dtype=dtype):
-            # Predicting Tracks
-            # Using VGGSfM tracker instead of VGGT tracker for efficiency
-            # VGGT tracker requires multiple backbone runs to query different frames (this is a problem caused by the training process)
-            # Will be fixed in VGGT v2
+        # Predicting Tracks
+        # Using VGGSfM tracker instead of VGGT tracker for efficiency
+        # VGGT tracker requires multiple backbone runs to query different frames (this is a problem caused by the training process)
+        # Will be fixed in VGGT v2
 
-            # You can also change the pred_tracks to tracks from any other methods
-            # e.g., from COLMAP, from CoTracker, or by chaining 2D matches from Lightglue/LoFTR.
-            pred_tracks, pred_vis_scores, pred_confs, points_3d, points_rgb = predict_tracks(
-                images,
-                conf=depth_conf,
-                points_3d=points_3d,
-                masks=None,
-                max_query_pts=args.max_query_pts,
-                query_frame_num=args.query_frame_num,
-                keypoint_extractor="aliked+sp",
-                fine_tracking=args.fine_tracking,
-            )
+        # You can also change the pred_tracks to tracks from any other methods
+        # e.g., from COLMAP, from CoTracker, or by chaining 2D matches from Lightglue/LoFTR.
+        pred_tracks, pred_vis_scores, pred_confs, points_3d, points_rgb = predict_tracks(
+            images,
+            conf=depth_conf,
+            points_3d=points_3d,
+            masks=None,
+            max_query_pts=args.max_query_pts,
+            query_frame_num=args.query_frame_num,
+            keypoint_extractor="aliked+sp",
+            fine_tracking=args.fine_tracking,
+        )
 
-            torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
         # rescale the intrinsic matrix from 518 to 1024
         intrinsic[:, :2, :] *= scale

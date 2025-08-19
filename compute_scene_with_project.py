@@ -5,10 +5,8 @@ import numpy as np
 import argparse
 import sys
 from typing import Dict, Any, Optional
-import json 
 
 import pyvista as pv
-import pandas as pd
 
 from torch.profiler import profile, record_function, ProfilerActivity
 from torch.autograd import profiler
@@ -21,8 +19,10 @@ from vggt.utils.load_fn import load_and_preprocess_images
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.utils.geometry import unproject_depth_map_to_point_map
 
+import json 
+from scipy.spatial.transform import Rotation 
 from solve_T_s import solve_T_s, a_to_b, transform_point_cloud_a_to_b
-
+import time 
 
 # --- Step 1: Model Loading ---
 def load_vggt_model() -> (VGGT, str):
@@ -30,13 +30,11 @@ def load_vggt_model() -> (VGGT, str):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cpu":
         print("Warning: CUDA is not available. Running on CPU will be very slow.")
-    model = VGGT.from_pretrained("facebook/VGGT-1B")
-    # model = VGGT()
-    # _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
-    # model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
+    model = VGGT()
+    _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
+    model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
     model.eval()
-    model = model.to(torch.float16)
-    model = model.to(device)
+    model = model.to(torch.float16).to(device)
     print("Model loaded successfully.")
     return model, device
 
@@ -52,7 +50,7 @@ def preprocess_input_images(image_dir: str, device: str) -> Optional[torch.Tenso
     image_paths = sorted(image_paths)
     print(f"Found {len(image_paths)} images. Preprocessing...")
     try:
-        images = load_and_preprocess_images(image_paths).to(device)
+        images = load_and_preprocess_images(image_paths).to(torch.float16).to(device)
         return images
     except Exception as e:
         print(f"Error during image preprocessing: {e}")
@@ -62,13 +60,12 @@ def preprocess_input_images(image_dir: str, device: str) -> Optional[torch.Tenso
 def run_model_inference(model: VGGT, images: torch.Tensor) -> Dict[str, Any]:
     print("Running model inference...")
     # dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float16
-    dtype = torch.float16
     torch.cuda.memory._record_memory_history(
         max_entries=100000
     )
     with torch.no_grad():
-        with torch.cuda.amp.autocast(dtype=dtype):
-            predictions = model(images)
+        # with torch.cuda.amp.autocast(dtype=dtype):
+        predictions = model(images)
     print("Inference complete.")
 
     torch.cuda.memory._dump_snapshot(f"memory_res.pickle")
@@ -140,7 +137,7 @@ def extract_and_filter_scene(
     vertices_3d = pred_world_points.reshape(-1, 3)
     conf = pred_world_points_conf.reshape(-1)
 
-    conf_threshold = np.percentile(conf, conf_thres_percent) if conf_thres_percent > 0 else 0.0
+    conf_threshold = np.percentile(conf.astype(float), conf_thres_percent) if conf_thres_percent > 0 else 0.0
     conf_mask = (conf >= conf_threshold)
 
     # Apply the same mask to both vertices and colors
@@ -192,149 +189,86 @@ def visualize_point_cloud(vertices: np.ndarray, colors: np.ndarray):
     print("Close the PyVista window to exit the script.")
     plotter.show()
 
-def concate_results(point_cloud, extrinsics1, result2=None, filenames = None):
-    '''
-    The function takes point cloud result1 and result2 and concatenate them together
-    The concatenation can only happen when there's overlapping frames between result1 and result2
-    The index of overlapping frames in result1 is specified by overlap
-    The overlapping frames in result2 is specified by result2[:len(overlap)]
+def reproject_final_results(image_dir, final_results):
+    point_cloud_vertices = final_results['point_cloud']
+    point_cloud_colors = final_results['point_cloud_colors']
 
-    :param result1: The first point cloud
-    :type result1: Dict
-    :param result2: The second point cloud
-    :type result2: Dict
-    :param overlap: The index of overlapping frames
-    :type result2: List[int]
-    ...
-    :return: The concatenated point clouds
-    :rtype: Dict
-    '''
+    extrinsics = final_results['extrinsics']
+    world_to_camera_vggt = np.zeros((extrinsics.shape[0],4,4))
+    world_to_camera_vggt[:,:3,:] = extrinsics 
+    world_to_camera_vggt[:,3,3] = 1
+    camera_to_world_vggt = np.linalg.inv(world_to_camera_vggt)
+
+    json_fn = os.path.join(image_dir, 'transforms.json')
+    with open(json_fn, 'r') as f:
+        transform_data = json.load(f)
     
-    # # If result2 is empty, return result1
-    if extrinsics1 == []:
-        extrinsics2 = result2['extrinsics']
-        raw_point_cloud2 = result2['raw_point_cloud']
-        raw_point_cloud2_colors = result2['raw_point_color']
-        final_extrinsics = []
-        for i in range(extrinsics2.shape[0]):
-            final_extrinsics.append((filenames[i], extrinsics2[i]))
-        final_point_cloud = np.concatenate((raw_point_cloud2, raw_point_cloud2_colors), axis=1)
-        return final_point_cloud, final_extrinsics
+    frames = transform_data['frames']
 
-    # Get the corresponding extrinsics from result1 and result2
-    # extrinsics1 = result1['extrinsics']
-    extrinsics2 = result2['extrinsics']
-    addon = np.zeros((extrinsics2.shape[0], 1, 4))
-    addon[:,0,3] = 1
-    extrinsics2 = np.concatenate((extrinsics2, addon), axis=1)
+    all_transform = []
+    for frame in frames:
+        all_transform.append(frame['transform_matrix'])
+    camera_to_world_json = np.array(all_transform)
+    trans_off = np.zeros((4,4))    
+    trans_off[:3,:3] = Rotation.from_euler('xyz',[0,-19,0], degrees=True).as_matrix()
+    trans_off[3,3] = 1
+    camera_to_world_json = camera_to_world_json@trans_off
 
-    overlap1 = extrinsics1[-(extrinsics2.shape[0]-1):]
-    overlap2 = extrinsics2[:-1]
+    refl_matrix = np.array([
+        [0,-1,0,0],
+        [0,0,-1,0],
+        [1,0,0,0],
+        [0,0,0,1]
+    ])
+    camera_to_world_vggt = camera_to_world_vggt @ refl_matrix
+    T_hat, s_hat = solve_T_s(camera_to_world_vggt[:], camera_to_world_json[:])
+    print(T_hat, s_hat)
 
-    # Compute transformation from result2 to result1
-    T, s = solve_T_s(overlap2, overlap1)
-
-    # Apply transformation to both the point cloud and extrinsics
-    # point_cloud2 = result2['point_cloud']
-    # point_cloud2_shape = point_cloud2.shape
-    # point_cloud2 = np.reshape(point_cloud2, (-1,3))
-    raw_point_cloud2 = result2['raw_point_cloud']
-    raw_point_cloud2_colors = result2['raw_point_color']
-    raw_point_cloud2 = raw_point_cloud2
-    raw_point_cloud2_shape = raw_point_cloud2.shape
-    raw_point_cloud2 = np.reshape(raw_point_cloud2[-1], (-1,3))
-    raw_point_cloud2_colors = np.reshape(raw_point_cloud2_colors[-1], (-1,3))
-    # point_cloud2_transformed = transform_point_cloud_a_to_b(point_cloud2[len(overlap):], T, s)
-    raw_point_cloud2_transformed = transform_point_cloud_a_to_b(raw_point_cloud2, T, s)
-    # point_cloud2_transformed = np.reshape(point_cloud2_transformed, point_cloud2_shape)
-    raw_point_cloud2_transformed = np.reshape(raw_point_cloud2_transformed, raw_point_cloud2_shape)
-    extrinsics2_transformed = a_to_b(extrinsics2[-1:], T, s)
-
-    final_extrinsics = final_extrinsics.append((filenames[-1], extrinsics2_transformed[0]))
-
-    raw_point_cloud2_transformed = np.concatenate((raw_point_cloud2_transformed, raw_point_cloud2_colors), axis=1)
-
-    raw_point_cloud2_transformed[:,:3] = raw_point_cloud2_transformed[:,:3]*100
-
-    final_point_cloud = np.concatenate((point_cloud, raw_point_cloud2_transformed), axis=0)
-
-    df = pd.DataFrame(final_point_cloud)
-
-    # 2. ✨ Quantize the first three columns ✨
-    #    Multiply by the factor, round to the nearest integer, and convert the type.
-    df[[0, 1, 2]] = df[[0, 1, 2]].round().astype(int)
-
-    # 3. Group by the NEW integer columns and calculate the mean of the rest
-    result_df = df.groupby([0, 1, 2], as_index=False).mean()
-
-    # 4. Convert back to a NumPy array
-    final_point_cloud = result_df.to_numpy()
-
-    # Perform point cloud quantization to merge point cloud 
-    return final_point_cloud, final_extrinsics
-
-def is_close(transform1, transform2):
-    if np.linalg.norm(transform1[:,3]-transform2[:,3])>0.1 or \
-        np.linalg.norm(transform1[:3,:3]-transform2[:3,:3]) > 0.25:
-        return False 
-    else:
-        return True 
+    camera_to_world_vggt_transformed = a_to_b(camera_to_world_vggt, T_hat, s_hat)          # reconstruct b from a
+    transformed_point_cloud = transform_point_cloud_a_to_b(point_cloud_vertices, T_hat, s_hat)
+    # return camera_to_world_vggt_transformed, transformed_point_cloud
+    final_results['point_cloud'] = transformed_point_cloud
+    final_results['extrinsics'] = np.linalg.inv(camera_to_world_vggt_transformed)[:,:3,:]
+    return final_results
 
 def main(args):
     model, device = load_vggt_model()
-    transform_json_fn = os.path.join(args.image_dir, 'transforms.json')
-    with open(transform_json_fn, 'r') as f:
-        transform_json = json.load(f)
-    frames = transform_json['frames']
-    extrinsics = []
-    filenames = []
-    point_cloud = np.zeros((0,6))
-    prev_transform = None
-    idx = 0 
-    for frame_idx in range(len(frames)):
-        if idx>=2:
-            break
-        frame = frames[frame_idx]
-        transform_matrix = np.array(frame['transform_matrix'])
-        image_fn = frame['file_path']
-        if prev_transform is not None and is_close(transform_matrix, prev_transform):
-            continue
-        else:
-            filenames.append(image_fn)
-            prev_transform = transform_matrix
-        if len(filenames<args.num_batch):
-            continue 
-        images = preprocess_input_images(args.image_dir, filenames, device)
-        raw_predictions = run_model_inference(model, images)
-        final_results = extract_and_filter_scene(raw_predictions, images.shape, args.conf_thres, args.branch)
-        point_cloud, extrinsics = concate_results(point_cloud, extrinsics, final_results, filenames)
-
+    images = preprocess_input_images(args.image_dir, device)
+    if images is None:
+        return
+    start_time = time.time()
+    raw_predictions = run_model_inference(model, images)
+    print("inference time:", time.time()-start_time)
+    start_time = time.time()
+    final_results = extract_and_filter_scene(raw_predictions, images.shape, args.conf_thres, args.branch)
+    print("reconstruction time:", time.time()-start_time)
+    
+    if final_results:
+        start_time = time.time()
+        final_results = reproject_final_results(args.image_dir, final_results)
+        print("reproject time:", time.time()-start_time)
+    
+        print("\n--- Computation Successful ---")
+        print(f"Extrinsics shape: {final_results['extrinsics'].shape}")
+        print(f"Intrinsics shape: {final_results['intrinsics'].shape}")
+        print(f"Point Cloud shape: {final_results['point_cloud'].shape}")
+        
         np.savez_compressed(
-            f'tmp{idx+1}.npz',
-            extrinsics=final_results1['extrinsics'],
-            intrinsics=final_results1['intrinsics'],
-            point_cloud=final_results1['point_cloud'],
-            point_cloud_colors = final_results1['point_cloud_colors'],
-            raw_point_cloud = final_results1["raw_point_cloud"],
-            raw_point_conf = final_results1["raw_point_conf"],
-            raw_point_color = final_results1["raw_point_color"],
-            filenames = np.array(filenames)
+            args.output_file,
+            extrinsics=final_results['extrinsics'],
+            intrinsics=final_results['intrinsics'],
+            point_cloud=final_results['point_cloud'],
+            point_cloud_colors = final_results['point_cloud_colors'],
+            raw_point_cloud = final_results["raw_point_cloud"],
+            raw_point_conf = final_results["raw_point_conf"],
+            raw_point_color = final_results["raw_point_color"],
+
         )
+        print(f"\nResults saved to: {args.output_file}")
+        
+        if args.visualize:
+            visualize_point_cloud(final_results['point_cloud'], final_results['point_cloud_colors'])
 
-        idx += 1
-        filenames.pop(0)
-
-    extrinsics_matrices = []
-    frames_fns = []
-    for i in range(len(extrinsics)):
-        extrinsics_matrices.append(extrinsics[i][1])
-        frames_fns.append(extrinsics[i][0])
-    np.savez_compressed(
-        f'point_cloud.npz',
-        pint_cloud = point_cloud,
-        extrinsics = np.array(extrinsics_matrices),
-        frame_fns = np.array(frames_fns)
-    )
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run VGGT to compute camera parameters and a point cloud from images.")
@@ -352,12 +286,6 @@ if __name__ == "__main__":
         "--visualize",
         action="store_true",
         help="If set, display the point cloud in an interactive window after computation."
-    )
-    parser.add_argument(
-        "--num_batch",
-        type = int,
-        default = 35,
-        help="number of frames in the batch"
     )
     
     args = parser.parse_args()

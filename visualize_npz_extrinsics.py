@@ -2,6 +2,7 @@ import numpy as np
 import pyvista as pv
 import argparse
 import os
+from scipy.spatial.transform import Rotation
 
 def visualize_point_cloud(plotter, points, colors):
     """
@@ -12,8 +13,8 @@ def visualize_point_cloud(plotter, points, colors):
         colors (np.ndarray): The RGB colors for the points.
     """
     print("Opening visualization window...")
-    cloud = pv.PolyData(points[::20,:])
-    cloud["colors"] = colors[::20,:]
+    cloud = pv.PolyData(points[::20,:].astype('float'))
+    cloud["colors"] = colors[::20,:].astype('float')
 
     # plotter = pv.Plotter(window_size=[1200, 800])
     plotter.add_mesh(

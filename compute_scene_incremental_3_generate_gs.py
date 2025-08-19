@@ -23,7 +23,8 @@ from vggt.utils.geometry import unproject_depth_map_to_point_map
 
 # from solve_T_s import solve_T_s, a_to_b, transform_point_cloud_a_to_b
 import open3d as o3d
-
+from PIL import Image
+from scipy.spatial.transform import Rotation as R 
 
 # --- Step 1: Model Loading ---
 def load_vggt_model() -> (VGGT, str):
@@ -348,6 +349,75 @@ def is_close(transform1, transform2):
     #     return True 
     return False
 
+def construct_nerf_data(dest, extrinsics, intrinsics, pcd, images):
+    intrinsic = np.mean(intrinsics, axis=0)
+    fl_x = intrinsic[0,0]
+    fl_y = intrinsic[1,1]
+    cx = intrinsic[0,2]
+    cy = intrinsic[1,2]
+    w = images.shape[2]
+    h = images.shape[1]
+
+    output_dict = {
+        "w": w,
+        "h": h,
+        "fl_x": fl_x,
+        "fl_y": fl_y,
+        "cx": cx,
+        "cy": cy,
+        "k1": 0,
+        "k2": 0,
+        "p1": 0,
+        "p2": 0,
+        "applied_transform": [
+            [1,0,0,0],
+            [0,1,0,0],
+            [0,0,1,0]
+        ],
+        "frames":[],
+        "ply_file_path":"sparse_pc.ply",
+    }
+    if not os.path.exists(dest):
+        os.mkdir(dest)
+    if not os.path.exists(os.path.join(dest, 'images')):
+        os.mkdir(os.path.join(dest, 'images'))
+
+    frames = []
+    for i in range(extrinsics.shape[0]):
+        image = Image.fromarray((images[i]*255).astype(np.uint8))
+        image_fn = f"frame_{i+1:04d}.png"
+        image.save(os.path.join(dest, './images',image_fn))
+        file_path = f"images/{image_fn}"
+        colmap_im_id = i+1 
+
+        transform_matrix = extrinsics[i]
+        transform_matrix = np.vstack((transform_matrix, np.array([[0,0,0,1]])))
+        transform_matrix = np.linalg.inv(transform_matrix)
+        transform_matrix[0:3, 1:3] *= -1
+        transform_matrix = transform_matrix[np.array([0, 2, 1, 3]), :]
+        transform_matrix[2, :] *= -1
+        transform_matrix = transform_matrix.tolist()
+
+        frame = {
+            "file_path": file_path,
+            "transform_matrix": transform_matrix,
+            colmap_im_id: colmap_im_id
+        }
+
+        frames.append(frame)
+
+    output_dict['frames'] = frames 
+
+    with open(os.path.join(dest, 'transforms.json'), 'w+') as f:
+        json.dump(output_dict, f, indent = 4)
+
+    o3d.io.write_point_cloud(
+        os.path.join(dest, 'sparse_pc.ply'), 
+        pcd,
+        write_ascii=True,
+    )
+
+
 def main(args):
     model, device, dtype = load_vggt_model()
     transform_json_fn = os.path.join(args.image_dir, 'transforms.json')
@@ -361,8 +431,8 @@ def main(args):
     idx = 0 
     for frame_idx in range(35, len(frames)):
     # for frame_idx in range(200):
-        # if idx>=10:
-        #     break
+        if idx>=1:
+            break
         frame = frames[frame_idx]
         transform_matrix = np.array(frame['transform_matrix'])
         image_fn = frame['file_path']
@@ -383,14 +453,14 @@ def main(args):
             intrinsics=final_results['intrinsics'],
             point_cloud=final_results['point_cloud'],
             point_cloud_colors = final_results['point_cloud_colors'],
-            overlapped_cloud = final_results['point_cloud'],
-            overlapped_colors = final_results['point_cloud_colors'],
             # raw_point_cloud = final_results["raw_point_cloud"],
             # raw_point_conf = final_results["raw_point_conf"],
             # raw_point_color = final_results["raw_point_color"],
             images = torch.permute(images, dims=((0,2,3,1))).detach().cpu().numpy(),
         )
-        point_cloud, pcd_compressed = concate_results(None, final_results)
+        point_cloud, pcd_compressed = concate_results(point_cloud, final_results)
+
+        construct_nerf_data('./gs_dataset',final_results['extrinsics'], final_results['intrinsics'], pcd_compressed, torch.permute(images, dims=((0,2,3,1))).detach().cpu().numpy())
 
         # np.savez_compressed(
         #     f'step_res/res_{idx:05d}.npz',
@@ -401,12 +471,8 @@ def main(args):
             pcd_compressed
         )
 
-        points_array = np.asarray(pcd_compressed.points)
-        np.save(f'step_res/res_geo_{idx:05d}.npy', points_array)
-
-
         idx += 1
-        if len(filenames)>90:
+        if len(filenames)>70:
             filenames = filenames[-70:]
         else:
             filenames = filenames[-int(len(filenames)*2.0/3.0):]
@@ -416,10 +482,10 @@ def main(args):
     # for i in range(len(extrinsics)):
     #     extrinsics_matrices.append(extrinsics[i][1])
     #     frames_fns.append(extrinsics[i][0])
-    # np.savez_compressed(
-    #     args.output_file,
-    #     point_cloud = point_cloud
-    # )
+    np.savez_compressed(
+        args.output_file,
+        point_cloud = point_cloud
+    )
     # o3d.io.write_point_cloud(
     #     f'step_res/res_{idx:05d}.npz', 
     #     pcd_compressed

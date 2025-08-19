@@ -290,8 +290,8 @@ class CorrBlock:
             corrs = self.corrs_pyramid[i]  # B, S, N, H, W
             *_, H, W = corrs.shape
 
-            dx = torch.linspace(-r, r, 2 * r + 1)
-            dy = torch.linspace(-r, r, 2 * r + 1)
+            dx = torch.linspace(-r, r, 2 * r + 1, dtype=coords.dtype)
+            dy = torch.linspace(-r, r, 2 * r + 1, dtype=coords.dtype)
             delta = torch.stack(torch.meshgrid(dy, dx, indexing="ij"), axis=-1).to(coords.device)
 
             centroid_lvl = coords.reshape(B * S * N, 1, 1, 2) / 2**i

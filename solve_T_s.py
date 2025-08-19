@@ -219,7 +219,15 @@ def visualize_cameras(
     ):
     for i in range(camera_poses.shape[0]):           # rgb_path unused here
 
-        # Full camera rotation with –5° pitch offset applied
+        # # Full camera rotation with –5° pitch offset applied
+        # refl_matrix = np.array([
+        #     [0,-1,0],
+        #     [0,0,-1],
+        #     [1,0,0],
+        # ])
+        # pos = camera_poses[i,:3,3]
+        # R_final = camera_poses[i,:3,:3]@np.linalg.inv(refl_matrix)
+
         pos = camera_poses[i,:3,3]
         R_final = camera_poses[i,:3,:3]
 
@@ -313,7 +321,7 @@ if __name__ == "__main__":
     transformed_point_cloud_masked = transformed_point_cloud[mask]
     point_cloud_colors_masked = point_cloud_colors[mask]
 
-    fig = visualize_point_cloud(fig, transformed_point_cloud_masked, point_cloud_colors_masked)
+    # fig = visualize_point_cloud(fig, transformed_point_cloud_masked, point_cloud_colors_masked)
     # Global XYZ reference axes (world frame)
     # fig.add_mesh(pv.Line((0, 0, 0), (10, 0, 0)), color="red",   line_width=4)
     # fig.add_mesh(pv.Line((0, 0, 0), (0, 10, 0)), color="green", line_width=4)
@@ -321,7 +329,7 @@ if __name__ == "__main__":
 
     fig = visualize_cameras(fig, camera_to_world_json, x_color = 'red', y_color='green', z_color='blue', marker_color='blue', line_length=0.25, marker_size=0.05)
 
-    # fig = visualize_cameras(fig, camera_to_world_vggt_transformed, x_color = 'red', y_color='red', z_color='red', marker_color='red', line_length=0.25, marker_size=0.05)
+    fig = visualize_cameras(fig, camera_to_world_vggt_transformed, x_color = 'red', y_color='red', z_color='red', marker_color='red', line_length=0.25, marker_size=0.05)
 
     fig.show()
 

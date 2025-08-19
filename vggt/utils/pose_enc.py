@@ -60,7 +60,7 @@ def extri_intri_to_pose_encoding(
 
 
 def pose_encoding_to_extri_intri(
-    pose_encoding, image_size_hw=None, pose_encoding_type="absT_quaR_FoV", build_intrinsics=True  # e.g., (256, 512)
+    pose_encoding, image_size_hw=None, pose_encoding_type="absT_quaR_FoV", build_intrinsics=True, dtype=torch.float16  # e.g., (256, 512)
 ):
     """Convert a pose encoding back to camera extrinsics and intrinsics.
 
@@ -112,7 +112,7 @@ def pose_encoding_to_extri_intri(
             H, W = image_size_hw
             fy = (H / 2.0) / torch.tan(fov_h / 2.0)
             fx = (W / 2.0) / torch.tan(fov_w / 2.0)
-            intrinsics = torch.zeros(pose_encoding.shape[:2] + (3, 3), device=pose_encoding.device)
+            intrinsics = torch.zeros(pose_encoding.shape[:2] + (3, 3), device=pose_encoding.device, dtype=dtype)
             intrinsics[..., 0, 0] = fx
             intrinsics[..., 1, 1] = fy
             intrinsics[..., 0, 2] = W / 2

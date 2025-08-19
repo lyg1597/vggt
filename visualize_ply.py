@@ -2,7 +2,7 @@ import pyvista as pv
 import os
 
 # --- Configuration ---
-ply_file_path = 'step_res/res_00002.ply'
+ply_file_path = 'step_res/res_00001.ply'
 
 # --- Check if the file exists ---
 if not os.path.exists(ply_file_path):

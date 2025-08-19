@@ -9,10 +9,13 @@ import json
 
 import pyvista as pv
 import pandas as pd
+from scipy.spatial.transform import Rotation
 
 from torch.profiler import profile, record_function, ProfilerActivity
 from torch.autograd import profiler
+from solve_T_s import solve_T_s, a_to_b, transform_point_cloud_a_to_b
 # from memory_profiler import profile
+from PIL import Image 
 
 sys.path.append(os.path.abspath(".")) 
 
@@ -86,7 +89,6 @@ def run_model_inference(model: VGGT, images: torch.Tensor) -> Dict[str, Any]:
 # --- Step 4: Post-processing and Filtering ---
 def extract_and_filter_scene(
     raw_predictions: Dict[str, Any],
-    images_shape: tuple,
     conf_thres_percent: float,
     branch: str
 ) -> Dict[str, np.ndarray]:
@@ -163,7 +165,7 @@ def extract_and_filter_scene(
     }
 
 # --- Step 5: Visualization ---
-def visualize_point_cloud(vertices: np.ndarray, colors: np.ndarray):
+def visualize_point_cloud(plotter, points, colors):
     """
     Creates an interactive 3D plot of the colored point cloud using PyVista.
 
@@ -171,28 +173,27 @@ def visualize_point_cloud(vertices: np.ndarray, colors: np.ndarray):
         vertices (np.ndarray): A NumPy array of shape (N, 3) for point coordinates.
         colors (np.ndarray): A NumPy array of shape (N, 3) for RGB colors.
     """
-    if vertices.size == 0:
-        print("Cannot visualize: The point cloud is empty.")
-        return
     print("Opening visualization window...")
-
-    cloud = pv.PolyData(vertices)
-    # Add the color data to the PolyData object as "scalars"
+    cloud = pv.PolyData(points)
     cloud["colors"] = colors
 
-    plotter = pv.Plotter(window_size=[1000, 800])
+    # plotter = pv.Plotter(window_size=[1200, 800])
     plotter.add_mesh(
         cloud,
         render_points_as_spheres=True,
-        point_size=5,
-        scalars="colors",  # Tell PyVista to use the color data
-        rgb=True,          # Specify that the scalars are RGB colors
+        point_size=1,
+        scalars="colors",
+        rgb=True,
+        ambient=1.0,
+        show_edges=False, 
+        lighting=False,
     )
+    plotter.add_title("Transformed Point Cloud (JSON Frame)", font_size=12)
+    # plotter.enable_eye_dome_lighting()
     plotter.add_axes()
-    plotter.enable_eye_dome_lighting()
-    plotter.set_background('black')
     print("Close the PyVista window to exit the script.")
-    plotter.show()
+    # plotter.show()
+    return plotter
 
 def align_data(new_data, base_data=None):
     """
@@ -340,13 +341,119 @@ def concate_results(base_point_cloud, new_result):
     # and the o3d object (for saving to .ply).
     return compressed_pcd_array, compressed_pcd_obj
     
-def is_close(transform1, transform2):
-    # if np.linalg.norm(transform1[:,3]-transform2[:,3])>0.1 or \
-    #     np.linalg.norm(transform1[:3,:3]-transform2[:3,:3]) > 0.25:
-    #     return False 
-    # else:
-    #     return True 
-    return False
+def visualize_cameras(
+        fig, 
+        camera_poses,
+        x_color = 'red',
+        y_color = 'green',
+        z_color = 'blue',
+        line_length = 0.5,
+        line_width = 4,
+        marker_color = 'red',
+        marker_size = 0.01,
+    ):
+    for i in range(camera_poses.shape[0]):           # rgb_path unused here
+
+        # Full camera rotation with –5° pitch offset applied
+        # refl_matrix = np.array([
+        #     [0,-1,0],
+        #     [0,0,-1],
+        #     [1,0,0],
+        # ])
+        pos = camera_poses[i,:3,3]
+        # R_final = camera_poses[i,:3,:3]@np.linalg.inv(refl_matrix)
+        R_final = camera_poses[i,:3,:3]
+
+        # Local axes endpoints
+        x_end = pos + R_final @ np.array([line_length, 0, 0])
+        y_end = pos + R_final @ np.array([0, line_length, 0])
+        z_end = pos + R_final @ np.array([0, 0, line_length])
+
+        # Draw camera-frame axes (short lines)
+        fig.add_mesh(pv.Line(pos, x_end), color=x_color,   line_width=line_width)
+        fig.add_mesh(pv.Line(pos, y_end), color=y_color, line_width=line_width)
+        fig.add_mesh(pv.Line(pos, z_end), color=z_color,  line_width=line_width)
+
+        # Red point marking the camera position
+        fig.add_mesh(pv.Sphere(radius=marker_size, center=pos), color=marker_color)
+
+    return fig
+
+def map_result(gt_extrinsics, raw_predictions, args = None):
+    final_results = extract_and_filter_scene(raw_predictions, args.conf_thres, args.branch)
+
+    predictions_np = {}
+    for key in raw_predictions.keys():
+        if isinstance(raw_predictions[key], torch.Tensor):
+            predictions_np[key] = raw_predictions[key].cpu().numpy().squeeze(0).astype('float')
+
+    depth_map = predictions_np["depth"]
+    extrinsics = predictions_np['extrinsic']
+    intrinsics = predictions_np['intrinsic'] 
+    intrinsic = np.mean(intrinsics, axis=0)
+
+    world_to_camera_vggt = np.zeros((extrinsics.shape[0],4,4))
+    world_to_camera_vggt[:,:3,:] = extrinsics 
+    world_to_camera_vggt[:,3,3] = 1
+    camera_to_world_vggt = np.linalg.inv(world_to_camera_vggt)
+
+    camera_to_world_json = np.array(gt_extrinsics)
+    trans_off = np.zeros((4,4))    
+    trans_off[:3,:3] = Rotation.from_euler('xyz',[0,-19,0], degrees=True).as_matrix()
+    trans_off[3,3] = 1
+    camera_to_world_json = camera_to_world_json@trans_off
+
+    refl_matrix = np.array([
+        [0,-1,0,0],
+        [0,0,-1,0],
+        [1,0,0,0],
+        [0,0,0,1]
+    ])
+    camera_to_world_vggt = camera_to_world_vggt @ refl_matrix
+
+    # camera_to_world_vggt = camera_to_world_vggt @ refl_matrix
+    T_hat, s_hat = solve_T_s(camera_to_world_vggt[:], camera_to_world_json[:])
+    print(T_hat, s_hat)
+
+    camera_to_world_vggt_transformed = a_to_b(camera_to_world_vggt, T_hat, s_hat)
+    rotation_vggt_transformed = camera_to_world_vggt_transformed[:,:3,:3]
+    # position_vggt_transformed = camera_to_world_vggt_transformed[:,:3,3]
+    refl_matrix = np.array([
+        [0,-1,0],
+        [0,0,-1],
+        [1,0,0],
+    ])
+    rotation_vggt_transformed = rotation_vggt_transformed@np.linalg.inv(refl_matrix)
+    camera_to_world_vggt_transformed[:,:3,:3] = rotation_vggt_transformed
+    depth_map_transformed = depth_map*abs(s_hat) 
+
+    if args.visualize:
+        
+        fig = pv.Plotter()
+        fig.set_background('white')
+        rotation_json = camera_to_world_json[:,:3,:3]
+        refl_matrix = np.array([
+            [0,-1,0],
+            [0,0,-1],
+            [1,0,0],
+        ])
+        rotation_json = rotation_json@np.linalg.inv(refl_matrix)     
+        camera_to_world_json[:,:3,:3] = rotation_json   
+        fig = visualize_cameras(fig, camera_to_world_json, x_color = 'red', y_color='green', z_color='blue', marker_color='blue', line_length=0.25, marker_size=0.05)
+        fig = visualize_cameras(fig, camera_to_world_vggt_transformed, x_color = 'purple', y_color='purple', z_color='purple', marker_color='red', line_length=0.25, marker_size=0.05)
+        
+        final_results = extract_and_filter_scene(raw_predictions, args.conf_thres, args.branch)
+        point_cloud_vertices = final_results['point_cloud']
+        point_cloud_colors = final_results['point_cloud_colors']
+
+        transformed_point_cloud = transform_point_cloud_a_to_b(point_cloud_vertices, T_hat, s_hat)
+
+        fig = visualize_point_cloud(fig, transformed_point_cloud, point_cloud_colors)
+
+        # fig = visualize_cameras(fig, camera_to_world_vggt, x_color = 'blue', y_color='blue', z_color='blue', marker_color='blue', line_length=0.25, marker_size=0.05)
+        fig.show()
+
+    return camera_to_world_vggt_transformed, depth_map_transformed, intrinsic, T_hat, s_hat 
 
 def main(args):
     model, device, dtype = load_vggt_model()
@@ -356,60 +463,88 @@ def main(args):
     frames = transform_json['frames']
     # extrinsics = []
     filenames = []
+    gt_extrinsics = []
     point_cloud = None
     prev_transform = None
     idx = 0 
+    prev_idx = 0
+    res_depth_idx = 0
     for frame_idx in range(35, len(frames)):
     # for frame_idx in range(200):
         # if idx>=10:
         #     break
         frame = frames[frame_idx]
         transform_matrix = np.array(frame['transform_matrix'])
+        gt_extrinsics.append(transform_matrix)
         image_fn = frame['file_path']
-        if prev_transform is not None and is_close(transform_matrix, prev_transform):
-            continue
-        else:
-            filenames.append(image_fn)
+        # if prev_transform is not None and is_close(transform_matrix, prev_transform):
+        #     continue
+        # else:
+        filenames.append(image_fn)
         #     # prev_transform = transform_matrix
         if len(filenames)<args.num_batch:
             continue 
         print(frame_idx)
         images = preprocess_input_images(args.image_dir, filenames, device, dtype)
         raw_predictions = run_model_inference(model, images)
-        final_results = extract_and_filter_scene(raw_predictions, images.shape, args.conf_thres, args.branch)
-        np.savez(
-            f'step_res/res_raw_{idx:05d}.npz',
-            extrinsics=final_results['extrinsics'],
-            intrinsics=final_results['intrinsics'],
-            point_cloud=final_results['point_cloud'],
-            point_cloud_colors = final_results['point_cloud_colors'],
-            overlapped_cloud = final_results['point_cloud'],
-            overlapped_colors = final_results['point_cloud_colors'],
-            # raw_point_cloud = final_results["raw_point_cloud"],
-            # raw_point_conf = final_results["raw_point_conf"],
-            # raw_point_color = final_results["raw_point_color"],
-            images = torch.permute(images, dims=((0,2,3,1))).detach().cpu().numpy(),
-        )
-        point_cloud, pcd_compressed = concate_results(None, final_results)
+        mapped_c2w, mapped_depth, intrinsic, T, s = map_result(gt_extrinsics, raw_predictions, args)
+
+        for j in range(prev_idx, mapped_c2w.shape[0]):
+            img_fn = f'step_res_depth/frame_{res_depth_idx:05d}.png'
+            depth_fn = f'step_res_depth/frame_depth_{res_depth_idx:05d}.png'
+            rgb = torch.permute(images[j], dims=(1,2,0)).detach().cpu().numpy()
+            depth = mapped_depth[j]
+            if not args.no_dump:
+                np.savez(
+                    f'step_res_depth/res_img_depth_{res_depth_idx:05d}.npz',
+                    c2w = mapped_c2w[j],
+                    intrinsic = intrinsic,
+                    rgb = rgb,
+                    depth = np.clip(depth/10.0, 0, 1),
+                    img_fn = img_fn,
+                    depth_fn = depth_fn,
+                    depth_scale = 10.0
+                )
+                image_pil = Image.fromarray((rgb*255).astype(np.uint8))
+                image_pil.save(img_fn)
+                depth_pil = Image.fromarray((np.clip(depth.squeeze()/10.0, 0, 1)*255).astype(np.uint8))
+                depth_pil.save(depth_fn)
+                res_depth_idx += 1
+        # final_results = extract_and_filter_scene(raw_predictions, images.shape, args.conf_thres, args.branch)
+        # np.savez(
+        #     f'step_res/res_raw_{idx:05d}.npz',
+        #     extrinsics=final_results['extrinsics'],
+        #     intrinsics=final_results['intrinsics'],
+        #     point_cloud=final_results['point_cloud'],
+        #     point_cloud_colors = final_results['point_cloud_colors'],
+        #     # raw_point_cloud = final_results["raw_point_cloud"],
+        #     # raw_point_conf = final_results["raw_point_conf"],
+        #     # raw_point_color = final_results["raw_point_color"],
+        #     images = torch.permute(images, dims=((0,2,3,1))).detach().cpu().numpy(),
+        # )
+        # point_cloud, pcd_compressed = concate_results(point_cloud, final_results)
 
         # np.savez_compressed(
         #     f'step_res/res_{idx:05d}.npz',
         #     point_cloud = point_cloud
         # )
-        o3d.io.write_point_cloud(
-            f'step_res/res_{idx:05d}.ply', 
-            pcd_compressed
-        )
+        # o3d.io.write_point_cloud(
+        #     f'step_res/res_{idx:05d}.ply', 
+        #     pcd_compressed
+        # )
 
-        points_array = np.asarray(pcd_compressed.points)
-        np.save(f'step_res/res_geo_{idx:05d}.npy', points_array)
+        # points_array = np.asarray(pcd_compressed.points)
+        # np.save(f'step_res/res_geo_{idx:05d}.npy', points_array)
 
 
         idx += 1
-        if len(filenames)>90:
-            filenames = filenames[-70:]
+        if len(filenames)>70:
+            filenames = []
+            gt_extrinsics = []
         else:
             filenames = filenames[-int(len(filenames)*2.0/3.0):]
+            gt_extrinsics = gt_extrinsics[-int(len(gt_extrinsics)*2.0/3.0):]
+        prev_idx = len(filenames)
 
     # extrinsics_matrices = []
     # frames_fns = []
@@ -448,6 +583,12 @@ if __name__ == "__main__":
         default = 35,
         help="number of frames in the batch"
     )
+    parser.add_argument(
+        "--no_dump",
+        action="store_true",
+        help="If set, disable saving result to files."
+    )    
+
     
     args = parser.parse_args()
 

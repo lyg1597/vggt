@@ -42,13 +42,13 @@ if __name__ == "__main__":
     new_transforms_json['frames'] = []
 
     frames = transforms_json['frames']
-    for i in range(500,len(frames),args.skip_interval):
+    for i in range(0,len(frames),args.skip_interval):
         frame = frames[i]
         new_transforms_json['frames'].append(frame)
         
         img_fn = frame['file_path']
         input_image_fn = os.path.join(args.input_folder, img_fn)
-        output_image_fn = os.path.join(args.output_folder, img_fn)
+        output_image_fn = os.path.join(args.output_folder, f"frame_{i:05d}.jpg")
 
         shutil.copy(input_image_fn, output_image_fn)
 
